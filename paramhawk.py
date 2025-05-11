@@ -2,17 +2,17 @@
 # -*- coding: utf-8 -*-
 
 """
-Web Parameter Discoverer - Advanced Website Parameter Discovery Tool
+PARA-HAWK - Advanced Website Parameter Discovery Tool
 
 This script performs deep crawling of a target domain to identify all URLs 
 containing GET parameters. It features multithreaded crawling, JavaScript parsing,
 parameter extraction, and formatted output.
 
 Usage:
-    python parameter_discoverer.py [options] domain
+    python parahawk.py [options] domain
 
 Example:
-    python parameter_discoverer.py --depth 3 --threads 10 example.com
+    python parahawk.py --depth 3 --threads 10 example.com
 """
 
 import argparse
@@ -555,7 +555,7 @@ class WebParameterDiscoverer:
 
 async def async_main():
     """Asynchronous entry point for faster startup."""
-    parser = argparse.ArgumentParser(description="Web Parameter Discoverer - Find all parameters on a website")
+    parser = argparse.ArgumentParser(description="PARA HAWK - Find all parameters on a website")
     
     # Required arguments
     parser.add_argument("domain", help="Target domain to scan (e.g., example.com)")
