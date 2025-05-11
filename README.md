@@ -61,7 +61,7 @@ PARAHAWK is a comprehensive tool designed for security researchers, web develope
 1. Clone this repository or download the script:
    ```bash
    git clone https://github.com/VIRTUAL-VIRUZ/ParaHawk.git
-   cd web-parameter-discoverer
+   cd ParaHawk
    ```
 
 2. Install required dependencies:
