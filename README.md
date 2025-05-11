@@ -5,7 +5,7 @@ A powerful and advanced Python tool for discovering URL parameters on websites t
 [![Python Version](https://img.shields.io/badge/python-3.7%2B-blue)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-![Web Parameter Discoverer Banner](https://img.shields.io/badge/Web-Parameter%20Discoverer-blue)
+![Web Parameter Discoverer Banner](https://img.shields.io/badge/PARAHAWK-blue)
 
 ## Overview
 
