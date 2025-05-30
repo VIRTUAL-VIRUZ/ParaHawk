@@ -136,12 +136,15 @@ class WebParameterDiscoverer:
             response = self._make_request(robots_url)
             if response and response.status_code == 200:
                 self.robots_parser.parse(response.text.splitlines())
-                logger.info(f"[bold green]Loaded robots.txt from {robots_url}[/bold green]")
+                if not self.args.quiet:
+                    logger.info(f"[bold green]Loaded robots.txt from {robots_url}[/bold green]")
             else:
-                logger.info(f"[yellow]No robots.txt found at {robots_url}[/yellow]")
+                if not self.args.quiet:
+                    logger.info(f"[yellow]No robots.txt found at {robots_url}[/yellow]")
                 self.robots_parser = None
         except Exception as e:
-            logger.warning(f"[yellow]Failed to fetch robots.txt: {str(e)}[/yellow]")
+            if not self.args.quiet:
+                logger.warning(f"[yellow]Failed to fetch robots.txt: {str(e)}[/yellow]")
             self.robots_parser = None
     
     def _can_fetch(self, url: str) -> bool:
@@ -173,7 +176,7 @@ class WebParameterDiscoverer:
             )
             return response
         except requests.RequestException as e:
-            if self.args.verbose:
+            if self.args.verbose and not self.args.quiet:
                 logger.debug(f"[red]Request failed for {url}: {str(e)}[/red]")
             return None
     
@@ -230,7 +233,7 @@ class WebParameterDiscoverer:
             
             return normalized
         except Exception as e:
-            if self.args.verbose:
+            if self.args.verbose and not self.args.quiet:
                 logger.debug(f"[red]URL normalization error for {url}: {str(e)}[/red]")
             return None
     
@@ -268,7 +271,8 @@ class WebParameterDiscoverer:
             
             return links
         except Exception as e:
-            logger.warning(f"[yellow]Failed to parse HTML: {str(e)}[/yellow]")
+            if not self.args.quiet:
+                logger.warning(f"[yellow]Failed to parse HTML: {str(e)}[/yellow]")
             return links
     
     def _extract_urls_from_js(self, js_content: str, base_url: str) -> List[str]:
@@ -334,7 +338,8 @@ class WebParameterDiscoverer:
         
         # Check robots.txt
         if not self._can_fetch(url):
-            logger.debug(f"[yellow]Skipping {url} (disallowed by robots.txt)[/yellow]")
+            if self.args.verbose and not self.args.quiet:
+                logger.debug(f"[yellow]Skipping {url} (disallowed by robots.txt)[/yellow]")
             return []
         
         # Make the request
@@ -355,7 +360,7 @@ class WebParameterDiscoverer:
                 'content_type': content_type
             }
             
-            if self.args.verbose:
+            if self.args.verbose and not self.args.quiet:
                 logger.info(f"[green]Found parameters in {url}[/green]")
         
         # Process HTML
@@ -382,37 +387,28 @@ class WebParameterDiscoverer:
     
     def crawl(self):
         """Main crawling method using thread pool."""
-        logger.info(f"[bold blue]Starting parameter discovery on {self.base_url}[/bold blue]")
-        logger.info(f"[blue]Max depth: {self.args.depth}, Threads: {self.args.threads}[/blue]")
+        if not self.args.quiet:
+            logger.info(f"[bold blue]Starting parameter discovery on {self.base_url}[/bold blue]")
+            logger.info(f"[blue]Max depth: {self.args.depth}, Threads: {self.args.threads}[/blue]")
         
         # Create a queue of URLs to process
         queue = deque([(self.base_url, 0)])
         self.queued_urls.add(self.base_url)
         
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            console=console
-        ) as progress:
-            task = progress.add_task("[cyan]Crawling...", total=None)
-            
+        if self.args.quiet:
+            # No progress bar, just crawl
             with concurrent.futures.ThreadPoolExecutor(max_workers=self.args.threads) as executor:
                 future_to_url = {}
-                
                 while queue or future_to_url:
-                    # Submit new tasks up to the thread limit
                     while queue and len(future_to_url) < self.args.threads:
                         url, depth = queue.popleft()
                         future = executor.submit(self._process_url, url, depth)
                         future_to_url[future] = url
-                    
-                    # Process completed tasks
                     done, _ = concurrent.futures.wait(
                         future_to_url, 
                         timeout=0.1,
                         return_when=concurrent.futures.FIRST_COMPLETED
                     )
-                    
                     for future in done:
                         url = future_to_url.pop(future)
                         try:
@@ -420,38 +416,61 @@ class WebParameterDiscoverer:
                             for new_url, new_depth in new_links:
                                 if new_depth <= self.args.depth:
                                     queue.append((new_url, new_depth))
-                        except Exception as e:
-                            logger.error(f"[red]Error processing {url}: {str(e)}[/red]")
-                        
-                        # Update progress info
-                        progress.update(task, description=f"[cyan]Crawling... Found {len(self.parameter_urls)} URLs with parameters, Visited {len(self.visited_urls)} URLs[/cyan]")
+                        except Exception:
+                            pass
+        else:
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                console=console
+            ) as progress:
+                task = progress.add_task("[cyan]Crawling...", total=None)
+                with concurrent.futures.ThreadPoolExecutor(max_workers=self.args.threads) as executor:
+                    future_to_url = {}
+                    while queue or future_to_url:
+                        while queue and len(future_to_url) < self.args.threads:
+                            url, depth = queue.popleft()
+                            future = executor.submit(self._process_url, url, depth)
+                            future_to_url[future] = url
+                        done, _ = concurrent.futures.wait(
+                            future_to_url, 
+                            timeout=0.1,
+                            return_when=concurrent.futures.FIRST_COMPLETED
+                        )
+                        for future in done:
+                            url = future_to_url.pop(future)
+                            try:
+                                new_links = future.result()
+                                for new_url, new_depth in new_links:
+                                    if new_depth <= self.args.depth:
+                                        queue.append((new_url, new_depth))
+                            except Exception as e:
+                                logger.error(f"[red]Error processing {url}: {str(e)}[/red]")
+                            progress.update(task, description=f"[cyan]Crawling... Found {len(self.parameter_urls)} URLs with parameters, Visited {len(self.visited_urls)} URLs[/cyan]")
         
         # Process JavaScript files separately if requested
         if self.args.parse_js and self.js_files:
             self._process_js_files()
         
-        logger.info(f"[bold green]Crawling completed![/bold green]")
-        logger.info(f"[green]Total URLs visited: {len(self.visited_urls)}[/green]")
-        logger.info(f"[green]URLs with parameters found: {len(self.parameter_urls)}[/green]")
-        logger.info(f"[green]Unique parameters discovered: {len(self.unique_parameters)}[/green]")
+        if not self.args.quiet:
+            logger.info(f"[bold green]Crawling completed![/bold green]")
+            logger.info(f"[green]Total URLs visited: {len(self.visited_urls)}[/green]")
+            logger.info(f"[green]URLs with parameters found: {len(self.parameter_urls)}[/green]")
+            logger.info(f"[green]Unique parameters discovered: {len(self.unique_parameters)}[/green]")
     
     def _process_js_files(self):
         """Process all discovered JavaScript files."""
-        logger.info(f"[blue]Processing {len(self.js_files)} JavaScript files...[/blue]")
+        if self.args.quiet:
+            js_files_iter = self.js_files
+        else:
+            logger.info(f"[blue]Processing {len(self.js_files)} JavaScript files...[/blue]")
         
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            console=console
-        ) as progress:
-            js_task = progress.add_task("[cyan]Processing JS files...", total=len(self.js_files))
-            
+        if self.args.quiet:
             for js_url in self.js_files:
                 response = self._make_request(js_url)
                 if response and response.status_code == 200:
                     try:
                         js_urls = self._extract_urls_from_js(response.text, js_url)
-                        
                         for url in js_urls:
                             normalized = self._normalize_url(url, js_url)
                             if normalized and '?' in normalized:
@@ -464,11 +483,37 @@ class WebParameterDiscoverer:
                                         'source': 'javascript',
                                         'js_file': js_url
                                     }
-                    except Exception as e:
-                        if self.args.verbose:
-                            logger.debug(f"[yellow]Error processing JS file {js_url}: {str(e)}[/yellow]")
-                
-                progress.update(js_task, advance=1)
+                    except Exception:
+                        pass
+        else:
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                console=console
+            ) as progress:
+                js_task = progress.add_task("[cyan]Processing JS files...", total=len(self.js_files))
+                for js_url in self.js_files:
+                    response = self._make_request(js_url)
+                    if response and response.status_code == 200:
+                        try:
+                            js_urls = self._extract_urls_from_js(response.text, js_url)
+                            for url in js_urls:
+                                normalized = self._normalize_url(url, js_url)
+                                if normalized and '?' in normalized:
+                                    params = self._parse_parameters(normalized)
+                                    if params:
+                                        path = urllib.parse.urlparse(normalized).path or '/'
+                                        self.parameter_urls[normalized] = {
+                                            'path': path,
+                                            'parameters': params,
+                                            'source': 'javascript',
+                                            'js_file': js_url
+                                        }
+                        except Exception as e:
+                            if self.args.verbose:
+                                logger.debug(f"[yellow]Error processing JS file {js_url}: {str(e)}[/yellow]")
+                    progress.update(js_task, advance=1)
+
     def save_results(self):
         """Save the discovery results to files."""
         # Create output directory if it doesn't exist
@@ -516,10 +561,22 @@ class WebParameterDiscoverer:
             for param, count in sorted(param_counts.items(), key=lambda x: x[1], reverse=True):
                 writer.writerow([param, count])
         
-        logger.info(f"[bold green]Results saved to {self.output_dir}/ directory[/bold green]")
+        if not self.args.quiet:
+            logger.info(f"[bold green]Results saved to {self.output_dir}/ directory[/bold green]")
     
     def display_results(self):
         """Display the discovery results in the console."""
+        if self.args.quiet:
+            print(f"Parameter discovery for: {self.base_domain}")
+            if not self.parameter_urls:
+                print("No parameters found.\n")
+            print("Summary:")
+            print(f"  URLs visited: {len(self.visited_urls)}")
+            print(f"  URLs with parameters: {len(self.parameter_urls)}")
+            print(f"  Unique parameters: {len(self.unique_parameters)}")
+            print(f"  Results directory: {self.output_dir}/")
+            return
+
         # Create a table for parameters
         table = Table(title=f"Parameter Discovery Results for {self.base_domain}")
         table.add_column("Parameter", style="cyan")
@@ -572,6 +629,7 @@ async def async_main():
     parser.add_argument("--rate-limit", type=float, help="Rate limit requests per second (e.g., 5.0 for 5 req/sec)")
     parser.add_argument("--custom-param-pattern", help="Custom regex pattern for parameter extraction")
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose output")
+    parser.add_argument("--quiet", "-q", action="store_true", help="Suppress all output except final summary and errors")
     parser.add_argument("--version", action="version", version="Web Parameter Discoverer v1.0.0")
     
     args = parser.parse_args()
@@ -581,16 +639,22 @@ async def async_main():
         args.parse_js = True
     
     # Configure logging level
-    if args.verbose:
+    if args.quiet:
+        logger.setLevel(logging.ERROR)
+        # Suppress rich console banners if quiet
+        def suppressed(*a, **kw): pass
+        console.print = suppressed
+    elif args.verbose:
         logger.setLevel(logging.DEBUG)
     
     try:
         # Banner
-        console.print("[bold blue]╔══════════════════════════════════════════════════════════╗[/bold blue]")
-        console.print("[bold blue]║                                                          ║[/bold blue]")
-        console.print("[bold blue]║             [cyan]Web Parameter Discoverer v1.0.0[/cyan]              ║[/bold blue]")
-        console.print("[bold blue]║                                                          ║[/bold blue]")
-        console.print("[bold blue]╚══════════════════════════════════════════════════════════╝[/bold blue]")
+        if not args.quiet:
+            console.print("[bold blue]╔══════════════════════════════════════════════════════════╗[/bold blue]")
+            console.print("[bold blue]║                                                          ║[/bold blue]")
+            console.print("[bold blue]║             [cyan]Web Parameter Discoverer v1.0.0[/cyan]              ║[/bold blue]")
+            console.print("[bold blue]║                                                          ║[/bold blue]")
+            console.print("[bold blue]╚══════════════════════════════════════════════════════════╝[/bold blue]")
         
         # Initialize and run the discoverer
         discoverer = WebParameterDiscoverer(args)
@@ -600,13 +664,17 @@ async def async_main():
         
         return 0
     except KeyboardInterrupt:
-        console.print("\n[yellow]Scan interrupted by user.[/yellow]")
+        if not args.quiet:
+            console.print("\n[yellow]Scan interrupted by user.[/yellow]")
         return 1
     except Exception as e:
-        console.print(f"\n[bold red]Error: {str(e)}[/bold red]")
-        if args.verbose:
-            import traceback
-            console.print(traceback.format_exc())
+        if not args.quiet:
+            console.print(f"\n[bold red]Error: {str(e)}[/bold red]")
+            if args.verbose:
+                import traceback
+                console.print(traceback.format_exc())
+        else:
+            print(f"\nError: {str(e)}")
         return 1
 
 def main():
