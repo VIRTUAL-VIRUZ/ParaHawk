@@ -2,11 +2,10 @@
 # -*- coding: utf-8 -*-
 
 """
-PARA-HAWK - Advanced Website Parameter Discovery Tool
+PARA-HAWK - Advanced Website Parameter Discovery Tool (Clean Version)
 
 This script performs deep crawling of a target domain to identify all URLs 
-containing GET parameters. It features multithreaded crawling, JavaScript parsing,
-parameter extraction, and formatted output.
+containing GET parameters with cleaner output and better error handling.
 
 Usage:
     python parahawk.py [options] domain
@@ -27,6 +26,7 @@ import re
 import sys
 import time
 import urllib.parse
+import warnings
 from collections import defaultdict, deque
 from datetime import datetime
 from typing import Dict, List, Optional, Set, Tuple, Union
@@ -41,13 +41,19 @@ from rich.logging import RichHandler
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
+# Suppress SSL warnings and other noise
+warnings.filterwarnings('ignore', message='Unverified HTTPS request')
+warnings.filterwarnings('ignore', category=requests.packages.urllib3.exceptions.InsecureRequestWarning)
+urllib3_logger = logging.getLogger('urllib3')
+urllib3_logger.setLevel(logging.ERROR)
+
 # Configure rich console and logging
 console = Console()
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.WARNING,  # Changed from INFO to WARNING for cleaner output
     format="%(message)s",
     datefmt="[%X]",
-    handlers=[RichHandler(rich_tracebacks=True, console=console)]
+    handlers=[RichHandler(rich_tracebacks=True, console=console, show_path=False)]
 )
 logger = logging.getLogger("parameter_discoverer")
 
@@ -57,24 +63,36 @@ USER_AGENTS = [
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.1 Safari/605.1.15",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0) Gecko/20100101 Firefox/89.0",
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/92.0.4515.107 Safari/537.36",
-    "Mozilla/5.0 (iPhone; CPU iPhone OS 14_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1",
-    "Mozilla/5.0 (iPad; CPU OS 14_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Edge/91.0.864.59 Safari/537.36",
 ]
 
 # JavaScript URL pattern matching
 JS_URL_PATTERNS = [
-    r'[\"\']([^\"\']*\?[^\"\']+=[^\"\']*?)[\"\']',  # "url?param=value" or 'url?param=value'
-    r'\.href\s*=\s*[\"\']([^\"\']*\?[^\"\']+=[^\"\']*?)[\"\']',  # .href = "url?param=value"
-    r'\.open\([\'\"](GET|POST)[\'\"],\s*[\'\"](.*?\?.*?)[\'\"]\s*[),]',  # .open("GET", "url?param")
-    r'\.ajax\(\{.*?url:\s*[\'\"](.*?\?.*?)[\'\"]',  # .ajax({url: "url?param"
-    r'fetch\([\'\"](.*?\?.*?)[\'\"]',  # fetch("url?param")
-    r'new URL\([\'\"](.*?\?.*?)[\'\"]',  # new URL("url?param")
-    r'new Request\([\'\"](.*?\?.*?)[\'\"]',  # new Request("url?param")
+    r'[\"\']([^\"\']*\?[^\"\']+=[^\"\']*?)[\"\']',
+    r'\.href\s*=\s*[\"\']([^\"\']*\?[^\"\']+=[^\"\']*?)[\"\']',
+    r'\.open\([\'\"](GET|POST)[\'\"],\s*[\'\"](.*?\?.*?)[\'\"]\s*[),]',
+    r'\.ajax\(\{.*?url:\s*[\'\"](.*?\?.*?)[\'\"]',
+    r'fetch\([\'\"](.*?\?.*?)[\'\"]',
+    r'new URL\([\'\"](.*?\?.*?)[\'\"]',
+    r'new Request\([\'\"](.*?\?.*?)[\'\"]',
 ]
 
-# Parameter extraction regex
-PARAM_PATTERN = re.compile(r'[?&]([^=&]+)=([^&]*)')
+def display_banner():
+    """Display the PARA-HAWK banner with ASCII art."""
+    banner = """
+[bold red]
+    ██████╗  █████╗ ██████╗  █████╗       ██╗  ██╗ █████╗ ██╗    ██╗██╗  ██╗
+    ██╔══██╗██╔══██╗██╔══██╗██╔══██╗      ██║  ██║██╔══██╗██║    ██║██║ ██╔╝
+    ██████╔╝███████║██████╔╝███████║█████╗███████║███████║██║ █╗ ██║█████╔╝ 
+    ██╔═══╝ ██╔══██║██╔══██╗██╔══██║╚════╝██╔══██║██╔══██║██║███╗██║██╔═██╗ 
+    ██║     ██║  ██║██║  ██║██║  ██║      ██║  ██║██║  ██║╚███╔███╔╝██║  ██╗
+    ╚═╝     ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝      ╚═╝  ╚═╝╚═╝  ╚═╝ ╚══╝╚══╝ ╚═╝  ╚═╝
+[/bold red]
+    [bold yellow]🦅 Advanced Website Parameter Discovery Tool v2.0.0[/bold yellow]
+    [dim]═══════════════════════════════════════════════════════════════════[/dim]
+    [cyan]Hunt down hidden parameters with the precision of a hawk[/cyan]
+    [dim]Created by: Muhammed Farhan[/dim]
+"""
+    console.print(banner)
 
 class WebParameterDiscoverer:
     """Main class for website parameter discovery."""
@@ -109,6 +127,11 @@ class WebParameterDiscoverer:
         self.session = requests.Session()
         self.session.headers.update({'User-Agent': random.choice(USER_AGENTS)})
         
+        # Disable SSL warnings completely if insecure mode
+        if args.insecure:
+            self.session.verify = False
+            requests.packages.urllib3.disable_warnings()
+        
         # Initialize robots.txt parser if needed
         if not args.ignore_robots:
             self._init_robots_parser()
@@ -128,7 +151,7 @@ class WebParameterDiscoverer:
         return domain
     
     def _init_robots_parser(self):
-        """Initialize the robots.txt parser."""
+        """Initialize the robots.txt parser silently."""
         self.robots_parser = RobotFileParser()
         robots_url = urllib.parse.urljoin(self.base_url, '/robots.txt')
         
@@ -136,15 +159,11 @@ class WebParameterDiscoverer:
             response = self._make_request(robots_url)
             if response and response.status_code == 200:
                 self.robots_parser.parse(response.text.splitlines())
-                if not self.args.quiet:
-                    logger.info(f"[bold green]Loaded robots.txt from {robots_url}[/bold green]")
+                if self.args.verbose and not self.args.quiet:
+                    logger.info(f"[dim]Loaded robots.txt[/dim]")
             else:
-                if not self.args.quiet:
-                    logger.info(f"[yellow]No robots.txt found at {robots_url}[/yellow]")
                 self.robots_parser = None
-        except Exception as e:
-            if not self.args.quiet:
-                logger.warning(f"[yellow]Failed to fetch robots.txt: {str(e)}[/yellow]")
+        except Exception:
             self.robots_parser = None
     
     def _can_fetch(self, url: str) -> bool:
@@ -175,9 +194,7 @@ class WebParameterDiscoverer:
                 verify=not self.args.insecure
             )
             return response
-        except requests.RequestException as e:
-            if self.args.verbose and not self.args.quiet:
-                logger.debug(f"[red]Request failed for {url}: {str(e)}[/red]")
+        except requests.RequestException:
             return None
     
     def _is_same_domain(self, url: str) -> bool:
@@ -232,9 +249,7 @@ class WebParameterDiscoverer:
             ))
             
             return normalized
-        except Exception as e:
-            if self.args.verbose and not self.args.quiet:
-                logger.debug(f"[red]URL normalization error for {url}: {str(e)}[/red]")
+        except Exception:
             return None
     
     def _extract_links_from_html(self, html_content: str, base_url: str) -> List[str]:
@@ -270,9 +285,7 @@ class WebParameterDiscoverer:
                         links.append(url_match.group(1).strip('"\''))
             
             return links
-        except Exception as e:
-            if not self.args.quiet:
-                logger.warning(f"[yellow]Failed to parse HTML: {str(e)}[/yellow]")
+        except Exception:
             return links
     
     def _extract_urls_from_js(self, js_content: str, base_url: str) -> List[str]:
@@ -338,8 +351,6 @@ class WebParameterDiscoverer:
         
         # Check robots.txt
         if not self._can_fetch(url):
-            if self.args.verbose and not self.args.quiet:
-                logger.debug(f"[yellow]Skipping {url} (disallowed by robots.txt)[/yellow]")
             return []
         
         # Make the request
@@ -359,9 +370,6 @@ class WebParameterDiscoverer:
                 'parameters': params,
                 'content_type': content_type
             }
-            
-            if self.args.verbose and not self.args.quiet:
-                logger.info(f"[green]Found parameters in {url}[/green]")
         
         # Process HTML
         if 'text/html' in content_type:
@@ -388,8 +396,7 @@ class WebParameterDiscoverer:
     def crawl(self):
         """Main crawling method using thread pool."""
         if not self.args.quiet:
-            logger.info(f"[bold blue]Starting parameter discovery on {self.base_url}[/bold blue]")
-            logger.info(f"[blue]Max depth: {self.args.depth}, Threads: {self.args.threads}[/blue]")
+            console.print(f"[bold blue]🔍 Scanning {self.base_domain} for parameters...[/bold blue]")
         
         # Create a queue of URLs to process
         queue = deque([(self.base_url, 0)])
@@ -444,78 +451,44 @@ class WebParameterDiscoverer:
                                 for new_url, new_depth in new_links:
                                     if new_depth <= self.args.depth:
                                         queue.append((new_url, new_depth))
-                            except Exception as e:
-                                logger.error(f"[red]Error processing {url}: {str(e)}[/red]")
-                            progress.update(task, description=f"[cyan]Crawling... Found {len(self.parameter_urls)} URLs with parameters, Visited {len(self.visited_urls)} URLs[/cyan]")
+                            except Exception:
+                                pass
+                            progress.update(task, description=f"[cyan]Found {len(self.parameter_urls)} parameterized URLs | Visited {len(self.visited_urls)} pages[/cyan]")
         
         # Process JavaScript files separately if requested
         if self.args.parse_js and self.js_files:
             self._process_js_files()
-        
-        if not self.args.quiet:
-            logger.info(f"[bold green]Crawling completed![/bold green]")
-            logger.info(f"[green]Total URLs visited: {len(self.visited_urls)}[/green]")
-            logger.info(f"[green]URLs with parameters found: {len(self.parameter_urls)}[/green]")
-            logger.info(f"[green]Unique parameters discovered: {len(self.unique_parameters)}[/green]")
     
     def _process_js_files(self):
         """Process all discovered JavaScript files."""
-        if self.args.quiet:
-            js_files_iter = self.js_files
-        else:
-            logger.info(f"[blue]Processing {len(self.js_files)} JavaScript files...[/blue]")
+        if not self.args.quiet and self.js_files:
+            console.print(f"[dim]Processing {len(self.js_files)} JavaScript files...[/dim]")
         
-        if self.args.quiet:
-            for js_url in self.js_files:
-                response = self._make_request(js_url)
-                if response and response.status_code == 200:
-                    try:
-                        js_urls = self._extract_urls_from_js(response.text, js_url)
-                        for url in js_urls:
-                            normalized = self._normalize_url(url, js_url)
-                            if normalized and '?' in normalized:
-                                params = self._parse_parameters(normalized)
-                                if params:
-                                    path = urllib.parse.urlparse(normalized).path or '/'
-                                    self.parameter_urls[normalized] = {
-                                        'path': path,
-                                        'parameters': params,
-                                        'source': 'javascript',
-                                        'js_file': js_url
-                                    }
-                    except Exception:
-                        pass
-        else:
-            with Progress(
-                SpinnerColumn(),
-                TextColumn("[progress.description]{task.description}"),
-                console=console
-            ) as progress:
-                js_task = progress.add_task("[cyan]Processing JS files...", total=len(self.js_files))
-                for js_url in self.js_files:
-                    response = self._make_request(js_url)
-                    if response and response.status_code == 200:
-                        try:
-                            js_urls = self._extract_urls_from_js(response.text, js_url)
-                            for url in js_urls:
-                                normalized = self._normalize_url(url, js_url)
-                                if normalized and '?' in normalized:
-                                    params = self._parse_parameters(normalized)
-                                    if params:
-                                        path = urllib.parse.urlparse(normalized).path or '/'
-                                        self.parameter_urls[normalized] = {
-                                            'path': path,
-                                            'parameters': params,
-                                            'source': 'javascript',
-                                            'js_file': js_url
-                                        }
-                        except Exception as e:
-                            if self.args.verbose:
-                                logger.debug(f"[yellow]Error processing JS file {js_url}: {str(e)}[/yellow]")
-                    progress.update(js_task, advance=1)
+        for js_url in self.js_files:
+            response = self._make_request(js_url)
+            if response and response.status_code == 200:
+                try:
+                    js_urls = self._extract_urls_from_js(response.text, js_url)
+                    for url in js_urls:
+                        normalized = self._normalize_url(url, js_url)
+                        if normalized and '?' in normalized:
+                            params = self._parse_parameters(normalized)
+                            if params:
+                                path = urllib.parse.urlparse(normalized).path or '/'
+                                self.parameter_urls[normalized] = {
+                                    'path': path,
+                                    'parameters': params,
+                                    'source': 'javascript',
+                                    'js_file': js_url
+                                }
+                except Exception:
+                    pass
 
     def save_results(self):
         """Save the discovery results to files."""
+        if not self.parameter_urls and not self.args.save_empty:
+            return  # Don't save if no results and not explicitly requested
+            
         # Create output directory if it doesn't exist
         if not os.path.exists(self.output_dir):
             os.makedirs(self.output_dir)
@@ -550,37 +523,44 @@ class WebParameterDiscoverer:
             json.dump(report, f, indent=4)
         
         # Save parameter occurrences
-        param_counts = defaultdict(int)
-        for url_data in self.parameter_urls.values():
-            for param in url_data['parameters'].keys():
-                param_counts[param] += 1
-        
-        with open(os.path.join(self.output_dir, 'parameter_frequency.csv'), 'w', encoding='utf-8', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow(['Parameter', 'Occurrences'])
-            for param, count in sorted(param_counts.items(), key=lambda x: x[1], reverse=True):
-                writer.writerow([param, count])
-        
-        if not self.args.quiet:
-            logger.info(f"[bold green]Results saved to {self.output_dir}/ directory[/bold green]")
+        if self.unique_parameters:
+            param_counts = defaultdict(int)
+            for url_data in self.parameter_urls.values():
+                for param in url_data['parameters'].keys():
+                    param_counts[param] += 1
+            
+            with open(os.path.join(self.output_dir, 'parameter_frequency.csv'), 'w', encoding='utf-8', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow(['Parameter', 'Occurrences'])
+                for param, count in sorted(param_counts.items(), key=lambda x: x[1], reverse=True):
+                    writer.writerow([param, count])
     
     def display_results(self):
         """Display the discovery results in the console."""
+        # Clean summary output
         if self.args.quiet:
-            print(f"Parameter discovery for: {self.base_domain}")
-            if not self.parameter_urls:
-                print("No parameters found.\n")
-            print("Summary:")
-            print(f"  URLs visited: {len(self.visited_urls)}")
-            print(f"  URLs with parameters: {len(self.parameter_urls)}")
-            print(f"  Unique parameters: {len(self.unique_parameters)}")
-            print(f"  Results directory: {self.output_dir}/")
+            if self.parameter_urls:
+                print(f"Found {len(self.parameter_urls)} URLs with {len(self.unique_parameters)} unique parameters")
+                for url in sorted(self.parameter_urls.keys()):
+                    print(url)
+            else:
+                print(f"No parameters found on {self.base_domain}")
             return
 
-        # Create a table for parameters
-        table = Table(title=f"Parameter Discovery Results for {self.base_domain}")
-        table.add_column("Parameter", style="cyan")
-        table.add_column("Occurrences", style="green", justify="right")
+        console.print()  # Empty line for spacing
+        
+        if not self.parameter_urls:
+            console.print(f"[yellow]⚠️  No parameters found on {self.base_domain}[/yellow]")
+            console.print(f"[dim]Visited {len(self.visited_urls)} URLs during scan[/dim]")
+            return
+        
+        # Success message
+        console.print(f"[bold green]✅ Found {len(self.unique_parameters)} unique parameters across {len(self.parameter_urls)} URLs![/bold green]")
+        
+        # Create a clean results table
+        table = Table(show_header=True, header_style="bold cyan")
+        table.add_column("Parameter", style="cyan", width=20)
+        table.add_column("Count", style="green", justify="right", width=8)
         table.add_column("Example URL", style="blue")
         
         # Count parameter occurrences
@@ -593,26 +573,41 @@ class WebParameterDiscoverer:
                 if param not in param_examples:
                     param_examples[param] = url
         
-        # Add rows to the table
-        for param, count in sorted(param_counts.items(), key=lambda x: x[1], reverse=True):
-            table.add_row(
-                param,
-                str(count),
-                param_examples[param][:60] + ('...' if len(param_examples[param]) > 60 else '')
-            )
+        # Add rows to the table (limit to top 20 for cleaner output)
+        sorted_params = sorted(param_counts.items(), key=lambda x: x[1], reverse=True)[:20]
+        for param, count in sorted_params:
+            example_url = param_examples[param]
+            # Truncate long URLs
+            if len(example_url) > 80:
+                example_url = example_url[:77] + "..."
+            table.add_row(param, str(count), example_url)
+        
+        if len(param_counts) > 20:
+            table.add_row("[dim]...[/dim]", "[dim]...[/dim]", f"[dim]({len(param_counts) - 20} more parameters)[/dim]")
         
         console.print(table)
         
-        # Summary
-        console.print(f"\n[bold]Summary:[/bold]")
-        console.print(f"  [cyan]Total URLs visited:[/cyan] [green]{len(self.visited_urls)}[/green]")
-        console.print(f"  [cyan]URLs with parameters:[/cyan] [green]{len(self.parameter_urls)}[/green]")
-        console.print(f"  [cyan]Unique parameters:[/cyan] [green]{len(self.unique_parameters)}[/green]")
-        console.print(f"  [cyan]Results saved to:[/cyan] [green]{self.output_dir}/[/green]")
+        # Clean summary
+        console.print(f"\n[bold]📊 Summary:[/bold]")
+        console.print(f"  [cyan]URLs scanned:[/cyan] {len(self.visited_urls)}")
+        console.print(f"  [cyan]URLs with parameters:[/cyan] {len(self.parameter_urls)}")
+        console.print(f"  [cyan]Unique parameters:[/cyan] {len(self.unique_parameters)}")
+        
+        if self.parameter_urls:
+            console.print(f"  [cyan]Results saved to:[/cyan] [green]{self.output_dir}/[/green]")
 
 async def async_main():
     """Asynchronous entry point for faster startup."""
-    parser = argparse.ArgumentParser(description="PARA HAWK - Find all parameters on a website")
+    parser = argparse.ArgumentParser(
+        description="PARA-HAWK - Find all parameters on a website",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python parahawk.py example.com
+  python parahawk.py --depth 2 --threads 5 example.com
+  python parahawk.py --quiet --include-subdomains example.com
+        """
+    )
     
     # Required arguments
     parser.add_argument("domain", help="Target domain to scan (e.g., example.com)")
@@ -621,40 +616,30 @@ async def async_main():
     parser.add_argument("--depth", type=int, default=3, help="Maximum crawl depth (default: 3)")
     parser.add_argument("--threads", type=int, default=10, help="Number of concurrent threads (default: 10)")
     parser.add_argument("--timeout", type=int, default=10, help="Request timeout in seconds (default: 10)")
-    parser.add_argument("--output-dir", help="Output directory for results (default: results_<domain>_<timestamp>)")
+    parser.add_argument("--output-dir", help="Output directory for results")
     parser.add_argument("--include-subdomains", action="store_true", help="Include subdomains in crawling")
     parser.add_argument("--ignore-robots", action="store_true", help="Ignore robots.txt restrictions")
     parser.add_argument("--insecure", action="store_true", help="Disable SSL certificate verification")
-    parser.add_argument("--parse-js", action="store_true", help="Parse JavaScript files for URLs (default: true)")
-    parser.add_argument("--rate-limit", type=float, help="Rate limit requests per second (e.g., 5.0 for 5 req/sec)")
+    parser.add_argument("--parse-js", action="store_true", default=True, help="Parse JavaScript files for URLs")
+    parser.add_argument("--rate-limit", type=float, help="Rate limit requests per second")
     parser.add_argument("--custom-param-pattern", help="Custom regex pattern for parameter extraction")
+    parser.add_argument("--save-empty", action="store_true", help="Save results even if no parameters found")
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose output")
-    parser.add_argument("--quiet", "-q", action="store_true", help="Suppress all output except final summary and errors")
-    parser.add_argument("--version", action="version", version="Web Parameter Discoverer v1.0.0")
+    parser.add_argument("--quiet", "-q", action="store_true", help="Minimal output (URLs only)")
+    parser.add_argument("--version", action="version", version="PARA-HAWK v2.0.0")
     
     args = parser.parse_args()
     
-    # Set default for parse_js
-    if args.parse_js is None:
-        args.parse_js = True
-    
     # Configure logging level
     if args.quiet:
-        logger.setLevel(logging.ERROR)
-        # Suppress rich console banners if quiet
-        def suppressed(*a, **kw): pass
-        console.print = suppressed
+        logger.setLevel(logging.CRITICAL)
     elif args.verbose:
-        logger.setLevel(logging.DEBUG)
+        logger.setLevel(logging.INFO)
     
     try:
-        # Banner
+        # Display banner (only if not quiet)
         if not args.quiet:
-            console.print("[bold blue]╔══════════════════════════════════════════════════════════╗[/bold blue]")
-            console.print("[bold blue]║                                                          ║[/bold blue]")
-            console.print("[bold blue]║             [cyan]Web Parameter Discoverer v1.0.0[/cyan]              ║[/bold blue]")
-            console.print("[bold blue]║                                                          ║[/bold blue]")
-            console.print("[bold blue]╚══════════════════════════════════════════════════════════╝[/bold blue]")
+            display_banner()
         
         # Initialize and run the discoverer
         discoverer = WebParameterDiscoverer(args)
@@ -665,16 +650,13 @@ async def async_main():
         return 0
     except KeyboardInterrupt:
         if not args.quiet:
-            console.print("\n[yellow]Scan interrupted by user.[/yellow]")
+            console.print("\n[yellow]⏹️  Scan interrupted by user[/yellow]")
         return 1
     except Exception as e:
         if not args.quiet:
-            console.print(f"\n[bold red]Error: {str(e)}[/bold red]")
-            if args.verbose:
-                import traceback
-                console.print(traceback.format_exc())
+            console.print(f"\n[bold red]❌ Error: {str(e)}[/bold red]")
         else:
-            print(f"\nError: {str(e)}")
+            print(f"Error: {str(e)}")
         return 1
 
 def main():
