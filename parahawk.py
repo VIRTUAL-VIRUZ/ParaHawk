@@ -469,7 +469,7 @@ class WebParameterDiscoverer:
                             logger.debug(f"[yellow]Error processing JS file {js_url}: {str(e)}[/yellow]")
                 
                 progress.update(js_task, advance=1)
-      def save_results(self):
+    def save_results(self):
         """Save the discovery results to files."""
         # Create output directory if it doesn't exist
         if not os.path.exists(self.output_dir):
